@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Cursor};
 
 use types::{Value, ErrorKind, RedisResult};
 
@@ -102,7 +102,10 @@ impl<T: Read> Parser<T> {
     fn read_int_value(&mut self) -> RedisResult<i64> {        
         let line = try!(self.read_string_line());
         match line.trim().parse::<i64>() {
-            Ok(v) => Ok(v),
+            Ok(v) => {
+                trace!("Read int value: {}", v);
+                Ok(v)
+            }
             Err(_) => Err((ErrorKind::ResponseError, "Expected integer, got garbage").into())
         }
     }
@@ -127,6 +130,7 @@ impl<T: Read> Parser<T> {
     }
 
     fn read(&mut self, size: usize) -> RedisResult<Vec<u8>> {
+        trace!("Read {} bytes", size);
         let mut rv = vec![0; size];
         let mut i = 0;
         while i < size {
@@ -150,6 +154,7 @@ impl<T: Read> Parser<T> {
     }
 
     fn expect_char(&mut self, expected: char) -> RedisResult<()> {
+        trace!("Expecting Char: {}", expected);
         let byte = try!(self.read_byte()) as char;
         if byte == expected {
             Ok(())
@@ -159,9 +164,86 @@ impl<T: Read> Parser<T> {
     }
 }
 
+pub fn parse_redis_value(bytes: &[u8]) -> RedisResult<Value> {
+    let mut parser = Parser::new(Cursor::new(bytes));
+    parser.parse_value()
+}
+
 #[cfg(test)]
 mod test {
-    use super::*;
-
+    #[cfg(test)]
+    extern crate env_logger;
     
+    use super::*;
+    use types::RedisError;
+
+    #[test]
+    fn test_parse_int() {
+        let bytes = ":12\r\n".as_bytes();
+        let value = parse_redis_value(bytes).unwrap();
+        assert_eq!(value, Value::Int(12i64));
+    }
+
+    #[test]
+    fn test_parse_ok() {
+        let bytes = "+OK\r\n".as_bytes();
+        assert_eq!(Value::Okay, parse_redis_value(bytes).unwrap());
+    }
+
+    #[test]
+    fn test_parse_nil() {
+        let bytes1 = "$-1\r\n".as_bytes();
+        let bytes2 = "*-1\r\n".as_bytes();
+        assert_eq!(Value::Nil, parse_redis_value(bytes1).unwrap());
+        assert_eq!(Value::Nil, parse_redis_value(bytes2).unwrap());
+    }
+
+    #[test]
+    fn test_parse_string() {
+        // env_logger::init().unwrap();
+        let bytes_nil = "$0\r\n\r\n".as_bytes();
+        let bytes = "$12hello, redis\r\n".as_bytes();
+        assert_eq!(Value::Data(vec![]), parse_redis_value(bytes_nil).unwrap());
+        // assert_eq!(Value::Data("hello, redis".as_bytes().to_vec()),
+        //            parse_redis_value(bytes).unwrap());
+    }
+
+    #[test]
+    fn test_parse_error() {
+        env_logger::init().unwrap();
+        let msg1 = "unknown command 'foobar'";
+        let msg2 = "Operation against a key holding the wrong kind of value";
+        let bytes1 = "-ERR unknown command 'foobar'\r\n".as_bytes();
+        let bytes2 = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n".as_bytes();
+
+        let err1 = parse_redis_value(bytes1).err().unwrap();       
+        assert_eq!(RedisError::from((ErrorKind::ResponseError,
+                    "An error was signaled by the server",
+                    msg1.to_string())),
+                   err1);
+
+        let err2 = parse_redis_value(bytes2).err().unwrap();               
+        assert_eq!(RedisError::from((ErrorKind::ExtensionError("WRONGTYPE".to_string()),
+                    "An error was signaled by the server",
+                    msg2.to_string())),
+                   err2);
+    }
+
+    #[test]
+    fn test_bulk() {
+        let bulk0 = "*0\r\n".as_bytes();
+        let bulk1 = "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".as_bytes();
+        let bulk2 = "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n".as_bytes();
+        let bulk3 = "*-1\r\n".as_bytes();
+
+        assert_eq!(Value::Bulk(vec![]),
+                   parse_redis_value(bulk0).unwrap());
+        assert_eq!(Value::Bulk(vec![Value::Data("foo".as_bytes().to_vec()),
+                                    Value::Data("bar".as_bytes().to_vec())]),
+                   parse_redis_value(bulk1).unwrap());
+        assert_eq!(Value::Bulk(vec![Value::Int(1i64), Value::Int(2i64), Value::Int(3i64), Value::Int(4i64),
+                                Value::Data("foobar".as_bytes().to_vec())]),
+                   parse_redis_value(bulk2).unwrap());
+        assert_eq!(Value::Nil, parse_redis_value(bulk3).unwrap());
+    }
 }

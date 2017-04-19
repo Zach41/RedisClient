@@ -24,6 +24,7 @@ pub enum ErrorKind {
 }
 
 /// Redis Value Enum
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Value {
     /// nil response
     Nil,
@@ -39,6 +40,7 @@ pub enum Value {
     Okay,    
 }
 
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct RedisError {
     pub kind: ErrorKind,
     pub desc: &'static str,
